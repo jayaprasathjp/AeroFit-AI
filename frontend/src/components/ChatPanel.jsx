@@ -10,10 +10,11 @@ const API_URL = `${API_BASE}/api/search`;
  * Left-side chat interface.
  *
  * Props:
- *   onPageChange(page: number) — lifts the cited page number up to <App/>
- *                                so the PDF viewer can jump to it.
+ *   onReferenceFound(page: number, query: string) — lifts the cited page number
+ *                                and query up to <App/> so the PDF viewer can
+ *                                jump to it and highlight text.
  */
-export default function ChatPanel({ onPageChange }) {
+export default function ChatPanel({ onReferenceFound }) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -34,8 +35,8 @@ export default function ChatPanel({ onPageChange }) {
         ...prev,
         { role: "assistant", text: data.answer, page: data.page },
       ]);
-      if (typeof data.page === "number" && onPageChange) {
-        onPageChange(data.page);
+      if (typeof data.page === "number" && onReferenceFound) {
+        onReferenceFound(data.page, query);
       }
     } catch (error) {
       const detail =

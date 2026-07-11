@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -18,8 +18,9 @@ const FILE_URL = "/mock_747_amm.pdf";
  *   pageNumber: number — the page to display. When this changes (because the
  *                        chat panel received a new API response), the viewer
  *                        jumps to that page automatically.
+ *   highlightText: string — text keywords to highlight on the page.
  */
-export default function PdfViewer({ pageNumber }) {
+export default function PdfViewer({ pageNumber, highlightText }) {
   const [numPages, setNumPages] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -39,6 +40,37 @@ export default function PdfViewer({ pageNumber }) {
   const goPrev = () => setCurrentPage((p) => Math.max(1, p - 1));
   const goNext = () =>
     setCurrentPage((p) => Math.min(numPages || p, p + 1));
+
+  const textRenderer = useCallback(
+    (textItem) => {
+      if (!highlightText) return textItem.str;
+      
+      // Extract words from highlightText that are longer than 4 chars or uppercase
+      const words = highlightText
+        .split(/\s+/)
+        .map(w => w.replace(/[^a-zA-Z0-9-]/g, ''))
+        .filter(w => w.length > 4 || (w.length > 1 && w === w.toUpperCase()));
+        
+      if (words.length === 0) return textItem.str;
+
+      // Build a regex to match any of these words (case-insensitive)
+      const pattern = new RegExp(`(${words.join("|")})`, "gi");
+      
+      const splitText = textItem.str.split(pattern);
+      if (splitText.length <= 1) return textItem.str;
+
+      return splitText.map((part, index) =>
+        index % 2 === 1 ? (
+          <mark key={index} className="bg-yellow-300 text-transparent">
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      );
+    },
+    [highlightText]
+  );
 
   return (
     <div className="flex h-full flex-col bg-slate-800">
@@ -82,6 +114,7 @@ export default function PdfViewer({ pageNumber }) {
           >
             <Page
               pageNumber={currentPage}
+              customTextRenderer={textRenderer}
               renderTextLayer
               renderAnnotationLayer
               width={640}
