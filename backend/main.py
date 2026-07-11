@@ -31,6 +31,7 @@ CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
 COLLECTION_NAME = "aerofit_amm"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 TOP_K = 3
+DOCUMENT_ID = "B748-AMM-IPC-001"
 
 # Gemini API configuration (read from environment / .env).
 # Get a free key at https://aistudio.google.com/apikey
@@ -44,12 +45,33 @@ ALLOWED_ORIGINS = [
 ]
 
 PROMPT_TEMPLATE = (
-    "You are an aviation mechanic assistant. Answer the user query using ONLY "
-    "the following context chunks. If the answer is not in the context, set the answer to "
-    "'I cannot find this in the manual.'\n\n"
-    "You must respond with the following two sections:\n"
-    "<answer>\nYour detailed response to the query. You may use markdown formatting.\n</answer>\n"
-    "<snippet>\nAn exact, brief excerpt from the context that directly supports your answer. This must be a verbatim substring from the context chunks.\n</snippet>\n\n"
+    "You are an aviation maintenance assistant for the Boeing 747-8F fleet. "
+    "Answer the user query using ONLY the following context chunks. If the answer "
+    "is not in the context, set the answer to 'I cannot find this in the manual.'\n\n"
+    "Respond with THREE sections in this exact order:\n\n"
+    "<answer>\nYour concise response to the query. Markdown allowed.\n</answer>\n\n"
+    "<snippet>\nAn exact, verbatim excerpt from the context that directly supports "
+    "your answer.\n</snippet>\n\n"
+    "<decision>\n"
+    "If the query is about a part and its approved alternates, output a JSON object "
+    "using this schema. Otherwise output {{}}.\n"
+    "{{\n"
+    '  "primary_part": "primary part number",\n'
+    '  "nomenclature": "part name",\n'
+    '  "revision": "manual revision if present, else empty string",\n'
+    '  "alternates": [\n'
+    "    {{\n"
+    '      "part_number": "alternate part number",\n'
+    '      "classification": "one of: True Alternate, Oversized Version, Optional Fit",\n'
+    '      "notes": "short technical note",\n'
+    '      "restrictions": "operational restriction if any, else empty string",\n'
+    '      "hardware": "required brackets/kits/manual refs if any, else empty string",\n'
+    '      "el_signoff": true or false\n'
+    "    }}\n"
+    "  ]\n"
+    "}}\n"
+    "Only use facts present in the context. Never invent part numbers.\n"
+    "</decision>\n\n"
     "Context:\n{chunks}\n\n"
     "User query: {query}\n"
 )
@@ -73,10 +95,28 @@ class SearchRequest(BaseModel):
     query: str
 
 
+class AlternatePart(BaseModel):
+    part_number: str = ""
+    classification: str = ""  # True Alternate | Oversized Version | Optional Fit
+    notes: str = ""
+    restrictions: str = ""
+    hardware: str = ""
+    el_signoff: bool = False
+
+
+class Decision(BaseModel):
+    primary_part: str = ""
+    nomenclature: str = ""
+    revision: str = ""
+    document: str = ""
+    alternates: list[AlternatePart] = []
+
+
 class SearchResponse(BaseModel):
     answer: str
     page: int
     snippet: str = ""
+    decision: Decision | None = None
 
 
 # --- Lazy singletons -------------------------------------------------------
@@ -157,6 +197,7 @@ def search(request: SearchRequest) -> SearchResponse:
     # The full text of the best-matching chunk. The frontend highlights its
     # distinctive terms (part numbers, nomenclature) on the rendered page.
     top_snippet = results[0].page_content
+    decision: Decision | None = None
 
     # 3. Build the grounded prompt.
     prompt = PROMPT_TEMPLATE.format(chunks=chunks_text, query=query)
@@ -190,6 +231,31 @@ def search(request: SearchRequest) -> SearchResponse:
         if snippet_match:
             top_snippet = snippet_match.group(1).strip() or top_snippet
 
+        # Parse the optional structured decision card.
+        decision_match = re.search(
+            r"<decision>(.*?)</decision>", content_str, re.DOTALL | re.IGNORECASE
+        )
+        if decision_match:
+            raw_decision = decision_match.group(1).strip()
+            # Strip any markdown code fences the model may add.
+            raw_decision = re.sub(r"^```(?:json)?", "", raw_decision).strip()
+            raw_decision = re.sub(r"```$", "", raw_decision).strip()
+            try:
+                data = json.loads(raw_decision)
+                if isinstance(data, dict) and data.get("alternates"):
+                    decision = Decision.model_validate(data)
+                    # Fill compliance fields from context if the model omitted them.
+                    if not decision.revision:
+                        rev = re.search(
+                            r"REVISION[:\s]+([\d.]+)", chunks_text, re.IGNORECASE
+                        )
+                        if rev:
+                            decision.revision = rev.group(1)
+                    if not decision.document:
+                        decision.document = DOCUMENT_ID
+            except (json.JSONDecodeError, ValueError):
+                decision = None
+
     except Exception as exc:  # noqa: BLE001 - surface config issues to the client
         raw_output = locals().get("content_str", "not_set")
         answer = (
@@ -197,4 +263,6 @@ def search(request: SearchRequest) -> SearchResponse:
             f"Reason: {exc}\nRaw LLM Output:\n{raw_output}\n\n{chunks_text}"
         )
 
-    return SearchResponse(answer=answer, page=top_page, snippet=top_snippet)
+    return SearchResponse(
+        answer=answer, page=top_page, snippet=top_snippet, decision=decision
+    )

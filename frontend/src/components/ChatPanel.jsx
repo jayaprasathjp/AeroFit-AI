@@ -1,5 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
+import DecisionCard from "./DecisionCard.jsx";
 
 // Base URL of the backend API. In production set VITE_API_URL to the deployed
 // backend Cloud Run URL (e.g. https://aerofit-backend-xxxx.a.run.app).
@@ -33,7 +34,12 @@ export default function ChatPanel({ onReferenceFound }) {
       const { data } = await axios.post(API_URL, { query });
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", text: data.answer, page: data.page },
+        {
+          role: "assistant",
+          text: data.answer,
+          page: data.page,
+          decision: data.decision || null,
+        },
       ]);
       if (typeof data.page === "number" && onReferenceFound) {
         onReferenceFound(data.page, data.snippet || query);
@@ -85,6 +91,9 @@ export default function ChatPanel({ onReferenceFound }) {
               }`}
             >
               {msg.text}
+              {msg.role === "assistant" && msg.decision && (
+                <DecisionCard decision={msg.decision} />
+              )}
               {msg.role === "assistant" && msg.page != null && (
                 <div className="mt-1 text-xs font-medium text-slate-500">
                   Source: page {msg.page}
