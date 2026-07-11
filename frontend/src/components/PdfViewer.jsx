@@ -43,30 +43,42 @@ export default function PdfViewer({ pageNumber, highlightText }) {
 
   const textRenderer = useCallback(
     (textItem) => {
-      if (!highlightText) return textItem.str;
-      
-      // Extract words from highlightText that are longer than 4 chars or uppercase
-      const words = highlightText
-        .split(/\s+/)
-        .map(w => w.replace(/[^a-zA-Z0-9-]/g, ''))
-        .filter(w => w.length > 4 || (w.length > 1 && w === w.toUpperCase()));
-        
-      if (words.length === 0) return textItem.str;
+      const escapeHtml = (s) =>
+        s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-      // Build a regex to match any of these words (case-insensitive)
-      const pattern = new RegExp(`(${words.join("|")})`, "gi");
-      
-      const splitText = textItem.str.split(pattern);
-      if (splitText.length <= 1) return textItem.str;
+      const safe = escapeHtml(textItem.str);
+      if (!highlightText) return safe;
 
-      return splitText.map((part, index) =>
-        index % 2 === 1 ? (
-          <mark key={index} className="bg-yellow-300 text-transparent">
-            {part}
-          </mark>
-        ) : (
-          part
-        )
+      // Pick distinctive tokens to highlight: part numbers / codes (contain a
+      // digit or hyphen), acronyms (ALL CAPS), or longer words. This keeps the
+      // highlight focused on "the found thing" instead of the whole page.
+      const isSignificant = (w) =>
+        /\d/.test(w) ||
+        w.includes("-") ||
+        (w.length >= 3 && w === w.toUpperCase()) ||
+        w.length > 6;
+
+      const words = [
+        ...new Set(
+          highlightText
+            .split(/\s+/)
+            .map((w) => w.replace(/[^a-zA-Z0-9-]/g, ""))
+            .filter((w) => w.length > 1 && isSignificant(w))
+        ),
+      ].slice(0, 15);
+
+      if (words.length === 0) return safe;
+
+      // Escape regex metacharacters, then match any term (case-insensitive).
+      const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
+
+      // react-pdf injects the returned string as HTML, so return markup.
+      // Translucent yellow lets the underlying glyphs show through like a
+      // highlighter; transparent text avoids duplicating the text layer.
+      return safe.replace(
+        pattern,
+        '<mark style="background-color: rgba(250, 204, 21, 0.5); color: transparent;">$1</mark>'
       );
     },
     [highlightText]

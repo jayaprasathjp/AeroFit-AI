@@ -36,7 +36,7 @@ export default function ChatPanel({ onReferenceFound }) {
         { role: "assistant", text: data.answer, page: data.page },
       ]);
       if (typeof data.page === "number" && onReferenceFound) {
-        onReferenceFound(data.page, query);
+        onReferenceFound(data.page, data.snippet || query);
       }
     } catch (error) {
       const detail =

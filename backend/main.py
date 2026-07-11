@@ -74,6 +74,7 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     answer: str
     page: int
+    snippet: str = ""
 
 
 # --- Lazy singletons -------------------------------------------------------
@@ -151,6 +152,9 @@ def search(request: SearchRequest) -> SearchResponse:
     chunks_text = "\n\n---\n\n".join(context_parts)
 
     top_page = int(results[0].metadata.get("page", 0)) + 1
+    # The full text of the best-matching chunk. The frontend highlights its
+    # distinctive terms (part numbers, nomenclature) on the rendered page.
+    top_snippet = results[0].page_content
 
     # 3. Build the grounded prompt.
     prompt = PROMPT_TEMPLATE.format(chunks=chunks_text, query=query)
@@ -171,4 +175,4 @@ def search(request: SearchRequest) -> SearchResponse:
             f"Reason: {exc}\n\n{chunks_text}"
         )
 
-    return SearchResponse(answer=answer, page=top_page)
+    return SearchResponse(answer=answer, page=top_page, snippet=top_snippet)
