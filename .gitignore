@@ -1,0 +1,13 @@
+# Python / backend
+__pycache__/
+*.pyc
+.env
+backend/chroma_db/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# OS
+.DS_Store
