@@ -42,7 +42,20 @@ export default function ChatPanel({ onReferenceFound }) {
         },
       ]);
       if (typeof data.page === "number" && onReferenceFound) {
-        onReferenceFound(data.page, data.snippet || query);
+        // Prefer highlighting the exact part numbers from the decision (precise);
+        // fall back to the retrieved snippet, then the raw query.
+        const partNumbers = [];
+        if (data.decision) {
+          if (data.decision.primary_part)
+            partNumbers.push(data.decision.primary_part);
+          (data.decision.alternates || []).forEach(
+            (a) => a.part_number && partNumbers.push(a.part_number)
+          );
+        }
+        const highlight = partNumbers.length
+          ? partNumbers.join(" ")
+          : data.snippet || query;
+        onReferenceFound(data.page, highlight);
       }
     } catch (error) {
       const detail =

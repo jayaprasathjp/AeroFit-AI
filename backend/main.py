@@ -32,6 +32,7 @@ COLLECTION_NAME = "aerofit_amm"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 TOP_K = 3
 DOCUMENT_ID = "B748-AMM-IPC-001"
+MANUAL_REVISION = "14.2"  # active revision of the ingested manual
 
 # Gemini API configuration (read from environment / .env).
 # Get a free key at https://aistudio.google.com/apikey
@@ -258,8 +259,7 @@ def search(request: SearchRequest) -> SearchResponse:
                         rev = re.search(
                             r"REVISION[:\s]+([\d.]+)", chunks_text, re.IGNORECASE
                         )
-                        if rev:
-                            decision.revision = rev.group(1)
+                        decision.revision = rev.group(1) if rev else MANUAL_REVISION
                     if not decision.document:
                         decision.document = DOCUMENT_ID
             except (json.JSONDecodeError, ValueError):
