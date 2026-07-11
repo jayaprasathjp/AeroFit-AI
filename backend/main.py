@@ -160,7 +160,11 @@ def search(request: SearchRequest) -> SearchResponse:
     try:
         llm = get_llm()
         response = llm.invoke(prompt)
-        answer = getattr(response, "content", str(response)).strip()
+        content = getattr(response, "content", str(response))
+        if isinstance(content, list):
+            answer = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content]).strip()
+        else:
+            answer = str(content).strip()
     except Exception as exc:  # noqa: BLE001 - surface config issues to the client
         answer = (
             "[Gemini unavailable] Returning retrieved context only. "
