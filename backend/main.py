@@ -48,10 +48,9 @@ PROMPT_TEMPLATE = (
     "You are an aviation maintenance assistant for the Boeing 747-8F fleet. "
     "Answer the user query using ONLY the following context chunks. If the answer "
     "is not in the context, set the answer to 'I cannot find this in the manual.'\n\n"
-    "Respond with THREE sections in this exact order:\n\n"
-    "<answer>\nYour concise response to the query. Markdown allowed.\n</answer>\n\n"
-    "<snippet>\nAn exact, verbatim excerpt from the context that directly supports "
-    "your answer.\n</snippet>\n\n"
+    "Respond with TWO sections in this exact order:\n\n"
+    "<answer>\nA concise response to the query, written in your own words "
+    "(do not copy long passages verbatim). Markdown allowed.\n</answer>\n\n"
     "<decision>\n"
     "If the query is about a part and its approved alternates, output a JSON object "
     "using this schema. Otherwise output {{}}.\n"
@@ -63,7 +62,7 @@ PROMPT_TEMPLATE = (
     "    {{\n"
     '      "part_number": "alternate part number",\n'
     '      "classification": "one of: True Alternate, Oversized Version, Optional Fit",\n'
-    '      "notes": "short technical note",\n'
+    '      "notes": "short technical note in your own words",\n'
     '      "restrictions": "operational restriction if any, else empty string",\n'
     '      "hardware": "required brackets/kits/manual refs if any, else empty string",\n'
     '      "el_signoff": true or false\n'
@@ -155,13 +154,27 @@ def get_llm():
                 "GOOGLE_API_KEY is not set. Get a free key at "
                 "https://aistudio.google.com/apikey and add it to backend/.env"
             )
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_google_genai import (
+            ChatGoogleGenerativeAI,
+            HarmBlockThreshold,
+            HarmCategory,
+        )
+
+        # Disable safety blocking so aviation/maintenance wording (e.g. "failure",
+        # "danger", fuel/explosive terms) doesn't cause premature truncation.
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
 
         _llm = ChatGoogleGenerativeAI(
             model=GEMINI_MODEL,
             google_api_key=GOOGLE_API_KEY,
             temperature=0.2,
-            max_output_tokens=1024,
+            max_output_tokens=2048,
+            safety_settings=safety_settings,
         )
     return _llm
 
@@ -216,20 +229,16 @@ def search(request: SearchRequest) -> SearchResponse:
         else:
             content_str = str(content).strip()
 
-        # Extract XML tags
+        # Extract the answer section.
         answer_match = re.search(r'<answer>(.*?)</answer>', content_str, re.DOTALL | re.IGNORECASE)
-        snippet_match = re.search(r'<snippet>(.*?)</snippet>', content_str, re.DOTALL | re.IGNORECASE)
 
         if answer_match:
             answer = answer_match.group(1).strip()
         else:
-            # Fallback if no tags found or if output was severely truncated
-            # We try to grab anything that looks like it was after <answer>
+            # Fallback if the closing tag is missing (e.g. truncated output):
+            # grab everything after <answer>, or the whole response.
             partial_match = re.search(r'<answer>(.*)', content_str, re.DOTALL | re.IGNORECASE)
             answer = partial_match.group(1).strip() if partial_match else content_str.strip()
-
-        if snippet_match:
-            top_snippet = snippet_match.group(1).strip() or top_snippet
 
         # Parse the optional structured decision card.
         decision_match = re.search(
