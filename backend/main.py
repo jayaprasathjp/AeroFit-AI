@@ -45,11 +45,13 @@ ALLOWED_ORIGINS = [
 
 PROMPT_TEMPLATE = (
     "You are an aviation mechanic assistant. Answer the user query using ONLY "
-    "the following context chunks. If the answer is not in the context, say "
+    "the following context chunks. If the answer is not in the context, set the answer to "
     "'I cannot find this in the manual.'\n\n"
+    "You must respond with the following two sections:\n"
+    "<answer>\nYour detailed response to the query. You may use markdown formatting.\n</answer>\n"
+    "<snippet>\nAn exact, brief excerpt from the context that directly supports your answer. This must be a verbatim substring from the context chunks.\n</snippet>\n\n"
     "Context:\n{chunks}\n\n"
-    "User query: {query}\n\n"
-    "Answer:"
+    "User query: {query}\n"
 )
 
 # --- App setup -------------------------------------------------------------
@@ -162,17 +164,37 @@ def search(request: SearchRequest) -> SearchResponse:
     # 4. Call Gemini. Degrade gracefully if Vertex AI is not configured so the
     #    UI (and page navigation) still works during local development.
     try:
+        import json
+        import re
+
         llm = get_llm()
         response = llm.invoke(prompt)
         content = getattr(response, "content", str(response))
         if isinstance(content, list):
-            answer = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content]).strip()
+            content_str = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content]).strip()
         else:
-            answer = str(content).strip()
+            content_str = str(content).strip()
+
+        # Extract XML tags
+        answer_match = re.search(r'<answer>(.*?)</answer>', content_str, re.DOTALL | re.IGNORECASE)
+        snippet_match = re.search(r'<snippet>(.*?)</snippet>', content_str, re.DOTALL | re.IGNORECASE)
+
+        if answer_match:
+            answer = answer_match.group(1).strip()
+        else:
+            # Fallback if no tags found or if output was severely truncated
+            # We try to grab anything that looks like it was after <answer>
+            partial_match = re.search(r'<answer>(.*)', content_str, re.DOTALL | re.IGNORECASE)
+            answer = partial_match.group(1).strip() if partial_match else content_str.strip()
+
+        if snippet_match:
+            top_snippet = snippet_match.group(1).strip() or top_snippet
+
     except Exception as exc:  # noqa: BLE001 - surface config issues to the client
+        raw_output = locals().get("content_str", "not_set")
         answer = (
-            "[Gemini unavailable] Returning retrieved context only. "
-            f"Reason: {exc}\n\n{chunks_text}"
+            "[Gemini unavailable or parsing failed] Returning retrieved context only. "
+            f"Reason: {exc}\nRaw LLM Output:\n{raw_output}\n\n{chunks_text}"
         )
 
     return SearchResponse(answer=answer, page=top_page, snippet=top_snippet)

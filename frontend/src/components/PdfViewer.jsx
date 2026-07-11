@@ -41,48 +41,80 @@ export default function PdfViewer({ pageNumber, highlightText }) {
   const goNext = () =>
     setCurrentPage((p) => Math.min(numPages || p, p + 1));
 
-  const textRenderer = useCallback(
-    (textItem) => {
-      const escapeHtml = (s) =>
-        s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const textRenderer = useCallback(
+      (textItem) => {
+        const escapeHtml = (s) =>
+          s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-      const safe = escapeHtml(textItem.str);
-      if (!highlightText) return safe;
+        const safe = escapeHtml(textItem.str);
+        if (!highlightText || !textItem.str.trim()) return safe;
 
-      // Pick distinctive tokens to highlight: part numbers / codes (contain a
-      // digit or hyphen), acronyms (ALL CAPS), or longer words. This keeps the
-      // highlight focused on "the found thing" instead of the whole page.
-      const isSignificant = (w) =>
-        /\d/.test(w) ||
-        w.includes("-") ||
-        (w.length >= 3 && w === w.toUpperCase()) ||
-        w.length > 6;
+        const snippet = highlightText;
+        const snippetLower = snippet.toLowerCase().replace(/\s+/g, " ");
+        const itemLower = textItem.str.toLowerCase().replace(/\s+/g, " ").trim();
 
-      const words = [
-        ...new Set(
-          highlightText
-            .split(/\s+/)
-            .map((w) => w.replace(/[^a-zA-Z0-9-]/g, ""))
-            .filter((w) => w.length > 1 && isSignificant(w))
-        ),
-      ].slice(0, 15);
+        // 1. If the text item is completely contained within the snippet
+        if (itemLower.length >= 4 && snippetLower.includes(itemLower)) {
+          return `<mark style="background-color: rgba(250, 204, 21, 0.5); color: transparent;">${safe}</mark>`;
+        }
 
-      if (words.length === 0) return safe;
+        // 2. If snippet lines are contained within the text item
+        const lines = snippet.split('\n').map((l) => l.trim()).filter((l) => l.length > 4);
+        let matchRegex = null;
 
-      // Escape regex metacharacters, then match any term (case-insensitive).
-      const escaped = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-      const pattern = new RegExp(`(${escaped.join("|")})`, "gi");
+        if (lines.length > 0) {
+          const escapedLines = lines.map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+          matchRegex = new RegExp(`(${escapedLines.join("|")})`, "gi");
+        } else if (snippet.trim().length > 4) {
+          const escapedSnippet = snippet.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          matchRegex = new RegExp(`(${escapedSnippet})`, "gi");
+        }
 
-      // react-pdf injects the returned string as HTML, so return markup.
-      // Translucent yellow lets the underlying glyphs show through like a
-      // highlighter; transparent text avoids duplicating the text layer.
-      return safe.replace(
-        pattern,
-        '<mark style="background-color: rgba(250, 204, 21, 0.5); color: transparent;">$1</mark>'
-      );
-    },
-    [highlightText]
-  );
+        if (matchRegex && matchRegex.test(textItem.str)) {
+          matchRegex.lastIndex = 0; // reset after .test()
+          return safe.replace(
+            matchRegex,
+            '<mark style="background-color: rgba(250, 204, 21, 0.5); color: transparent;">$1</mark>'
+          );
+        }
+
+        // 3. Fallback: highlight significant words and 2-word phrases
+        const words = snippet
+          .split(/\s+/)
+          .map((w) => w.replace(/[^a-zA-Z0-9-]/g, ""))
+          .filter(Boolean);
+
+        const phrases = [];
+        for (let i = 0; i < words.length - 1; i++) {
+          if (words[i].length > 2 && words[i + 1].length > 2) {
+            phrases.push(`${words[i]} ${words[i + 1]}`);
+          }
+        }
+
+        const isSignificant = (w) =>
+          /\d/.test(w) ||
+          w.includes("-") ||
+          (w.length >= 3 && w === w.toUpperCase()) ||
+          w.length > 6;
+
+        const significantWords = words.filter((w) => w.length > 3 && isSignificant(w));
+        const terms = [...new Set([...phrases, ...significantWords])].slice(0, 20);
+
+        if (terms.length > 0) {
+          terms.sort((a, b) => b.length - a.length);
+          const escaped = terms.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+          const pattern = new RegExp(`\\b(${escaped.join("|")})\\b`, "gi");
+
+          return safe.replace(
+            pattern,
+            '<mark style="background-color: rgba(250, 204, 21, 0.5); color: transparent;">$1</mark>'
+          );
+        }
+
+        return safe;
+      },
+      [highlightText]
+    );
 
   return (
     <div className="flex h-full flex-col bg-slate-800">
