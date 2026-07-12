@@ -54,18 +54,17 @@ ALLOWED_ORIGINS = [
 
 PROMPT_TEMPLATE = (
     "You are an aviation maintenance assistant for the Boeing 747-8F fleet. "
-    "Answer the user query using ONLY the following context chunks. If the answer "
-    "is not in the context, set the answer to 'I cannot find this in the manual.'\n\n"
-    "Respond with TWO sections in this exact order:\n\n"
-    "<answer>\nA concise response to the query, written in your own words "
-    "(do not copy long passages verbatim). Markdown allowed.\n</answer>\n\n"
-    "<decision>\n"
-    "Output a JSON object using the schema below whenever the context lists a "
-    "primary part together with one or more alternate parts or classifications "
-    "(this includes IPC parts tables with ITEM / PART NUMBER / NOMENCLATURE / "
-    "CLASSIFICATION columns, where the first row is the Primary Part and the "
-    "following rows marked True Alternate / Oversized / Optional Fit are the "
-    "alternates). Only output {{}} if the context has no part/alternate data.\n"
+    "Answer the user query using ONLY the context chunks below. Paraphrase in your "
+    "own words \u2014 do NOT copy long passages verbatim.\n\n"
+    "Return ONLY one valid JSON object (no markdown fences, no extra prose) with the "
+    'keys "answer" and "decision".\n\n'
+    '"answer": a concise answer to the query. If the answer is not in the context, set '
+    'it exactly to "I cannot find this in the manual."\n\n'
+    '"decision": use null UNLESS the context lists a primary part together with one or '
+    "more approved alternates or classifications (this includes IPC parts tables with "
+    "ITEM / PART NUMBER / NOMENCLATURE / CLASSIFICATION columns, where the first row is "
+    "the primary part and rows marked True Alternate / Oversized / Optional Fit are the "
+    "alternates). In that case set decision to an object with this schema:\n"
     "{{\n"
     '  "primary_part": "primary part number",\n'
     '  "nomenclature": "part name",\n'
@@ -73,7 +72,7 @@ PROMPT_TEMPLATE = (
     '  "alternates": [\n'
     "    {{\n"
     '      "part_number": "alternate part number",\n'
-    '      "classification": "one of: True Alternate, Oversized Version, Optional Fit",\n'
+    '      "classification": "True Alternate | Oversized Version | Optional Fit",\n'
     '      "notes": "short technical note in your own words",\n'
     '      "restrictions": "operational restriction if any, else empty string",\n'
     '      "hardware": "required brackets/kits/manual refs if any, else empty string",\n'
@@ -81,8 +80,7 @@ PROMPT_TEMPLATE = (
     "    }}\n"
     "  ]\n"
     "}}\n"
-    "Only use facts present in the context. Never invent part numbers.\n"
-    "</decision>\n\n"
+    "Only use facts present in the context. Never invent part numbers.\n\n"
     "Context:\n{chunks}\n\n"
     "User query: {query}\n"
 )
@@ -148,6 +146,33 @@ class SearchResponse(BaseModel):
     decision: Decision | None = None
 
 
+# --- LLM structured-output schema ------------------------------------------
+# Kept minimal and separate from the API models so the schema handed to Gemini
+# (via function-calling) stays small and unambiguous. Stock/compliance fields
+# are filled server-side afterward, not by the model.
+class LLMAlternate(BaseModel):
+    part_number: str = ""
+    classification: str = ""  # True Alternate | Oversized Version | Optional Fit
+    notes: str = ""
+    restrictions: str = ""
+    hardware: str = ""
+    el_signoff: bool = False
+
+
+class LLMDecision(BaseModel):
+    primary_part: str = ""
+    nomenclature: str = ""
+    revision: str = ""
+    alternates: list[LLMAlternate] = []
+
+
+class LLMOutput(BaseModel):
+    """The single object Gemini must return."""
+
+    answer: str = "I cannot find this in the manual."
+    decision: LLMDecision | None = None
+
+
 # --- Lazy singletons -------------------------------------------------------
 _vectorstore: Chroma | None = None
 _llm = None
@@ -199,13 +224,14 @@ def get_llm():
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
 
-        _llm = ChatGoogleGenerativeAI(
+        base_kwargs = dict(
             model=GEMINI_MODEL,
             google_api_key=GOOGLE_API_KEY,
             temperature=0.2,
             max_output_tokens=2048,
             safety_settings=safety_settings,
         )
+        _llm = ChatGoogleGenerativeAI(**base_kwargs)
     return _llm
 
 
@@ -283,65 +309,79 @@ def search(request: SearchRequest) -> SearchResponse:
     # distinctive terms (part numbers, nomenclature) on the rendered page.
     top_snippet = results[0].page_content
     decision: Decision | None = None
+    answer = "I cannot find this in the manual."
 
     # 3. Build the grounded prompt.
     prompt = PROMPT_TEMPLATE.format(chunks=chunks_text, query=query)
 
-    # 4. Call Gemini. Degrade gracefully if Vertex AI is not configured so the
-    #    UI (and page navigation) still works during local development.
+    # 4. Call Gemini. Degrade gracefully if it is not configured so the UI
+    #    (and page navigation) still works during local development.
     try:
         import json
         import re
 
         llm = get_llm()
-        response = llm.invoke(prompt)
-        content = getattr(response, "content", str(response))
-        if isinstance(content, list):
-            content_str = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content]).strip()
-        else:
-            content_str = str(content).strip()
+        answer_text = ""
+        dec_dict = None
 
-        # Extract the answer section.
-        answer_match = re.search(r'<answer>(.*?)</answer>', content_str, re.DOTALL | re.IGNORECASE)
-
-        if answer_match:
-            answer = answer_match.group(1).strip()
-        else:
-            # Fallback if the closing tag is missing (e.g. truncated output):
-            # grab everything after <answer>, or the whole response.
-            partial_match = re.search(r'<answer>(.*)', content_str, re.DOTALL | re.IGNORECASE)
-            answer = partial_match.group(1).strip() if partial_match else content_str.strip()
-
-        # Parse the optional structured decision card.
-        decision_match = re.search(
-            r"<decision>(.*?)</decision>", content_str, re.DOTALL | re.IGNORECASE
-        )
-        if decision_match:
-            raw_decision = decision_match.group(1).strip()
-            # Strip any markdown code fences the model may add.
-            raw_decision = re.sub(r"^```(?:json)?", "", raw_decision).strip()
-            raw_decision = re.sub(r"```$", "", raw_decision).strip()
+        # Primary path: native structured output (function-calling). Constrained
+        # decoding => always valid, complete JSON; immune to the recitation stop
+        # that truncates free-text generation.
+        try:
+            result = llm.with_structured_output(LLMOutput).invoke(prompt)
+            if isinstance(result, LLMOutput):
+                answer_text = result.answer
+                dec_dict = (
+                    result.decision.model_dump() if result.decision else None
+                )
+            elif isinstance(result, dict):
+                answer_text = result.get("answer", "")
+                dec_dict = result.get("decision")
+        except Exception:  # noqa: BLE001 - fall back to plain text + JSON parse
+            response = llm.invoke(prompt)
+            content = getattr(response, "content", str(response))
+            content_str = (
+                content
+                if isinstance(content, str)
+                else "".join(
+                    c.get("text", "") if isinstance(c, dict) else str(c)
+                    for c in content
+                )
+            )
+            clean = re.sub(r"^```(?:json)?", "", content_str.strip()).strip()
+            clean = re.sub(r"```$", "", clean).strip()
             try:
-                data = json.loads(raw_decision)
-                if isinstance(data, dict) and data.get("alternates"):
-                    decision = Decision.model_validate(data)
-                    # Fill compliance fields from context if the model omitted them.
-                    if not decision.revision:
-                        rev = re.search(
-                            r"REVISION[:\s]+([\d.]+)", chunks_text, re.IGNORECASE
-                        )
-                        decision.revision = rev.group(1) if rev else MANUAL_REVISION
-                    if not decision.document:
-                        decision.document = top_meta.get("document_id", DOCUMENT_ID)
-                    # Compliance check: is the cited revision the active one?
-                    decision.revision_current = (
-                        decision.revision == MANUAL_REVISION
-                    )
+                data = json.loads(clean)
             except (json.JSONDecodeError, ValueError):
-                decision = None
+                # Salvage the answer from a partial/truncated JSON response.
+                m = re.search(r'"answer"\s*:\s*"(.*?)"\s*[,}]', clean, re.DOTALL)
+                salvaged = (
+                    m.group(1).replace("\\n", "\n").replace('\\"', '"')
+                    if m
+                    else clean
+                )
+                data = {"answer": salvaged}
+            answer_text = data.get("answer", "")
+            dec_dict = data.get("decision")
+
+        if answer_text and answer_text.strip():
+            answer = answer_text.strip()
+
+        if isinstance(dec_dict, dict) and dec_dict.get("alternates"):
+            decision = Decision.model_validate(dec_dict)
+            # Fill compliance fields from context if the model omitted them.
+            if not decision.revision:
+                rev = re.search(
+                    r"REVISION[:\s]+([\d.]+)", chunks_text, re.IGNORECASE
+                )
+                decision.revision = rev.group(1) if rev else MANUAL_REVISION
+            if not decision.document:
+                decision.document = top_meta.get("document_id", DOCUMENT_ID)
+            # Compliance check: is the cited revision the active one?
+            decision.revision_current = decision.revision == MANUAL_REVISION
 
     except Exception as exc:  # noqa: BLE001 - surface config issues to the client
-        raw_output = locals().get("content_str", "not_set")
+        raw_output = locals().get("answer_text", "not_set")
         answer = (
             "[Gemini unavailable or parsing failed] Returning retrieved context only. "
             f"Reason: {exc}\nRaw LLM Output:\n{raw_output}\n\n{chunks_text}"
