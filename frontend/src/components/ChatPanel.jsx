@@ -54,13 +54,14 @@ export default function ChatPanel({ onReferenceFound }) {
         page: data.page,
         file: data.file || "amm.pdf",
         docType: data.doc_type || "",
+        found: data.found !== false,
         sources: data.sources || [],
         citations: data.citations || [],
         snippet: data.snippet || "",
         decision: data.decision || null,
       };
       setMessages((prev) => [...prev, assistantMsg]);
-      if (typeof data.page === "number" && onReferenceFound) {
+      if (assistantMsg.found && typeof data.page === "number" && onReferenceFound) {
         onReferenceFound(
           data.page,
           highlightFor(assistantMsg) || query,
@@ -139,6 +140,11 @@ export default function ChatPanel({ onReferenceFound }) {
               }`}
             >
               {msg.text}
+              {msg.role === "assistant" && !msg.found && (
+                <div className="mt-2 inline-block rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                  🔍 Not found in AMM / IPC
+                </div>
+              )}
               {msg.role === "assistant" && msg.decision && (
                 <DecisionCard
                   decision={msg.decision}
@@ -150,11 +156,14 @@ export default function ChatPanel({ onReferenceFound }) {
                   }
                 />
               )}
-              {msg.role === "assistant" && msg.page != null && (
-                <div className="mt-1 text-xs font-medium text-slate-500">
-                  Source: page {msg.page}
-                </div>
-              )}
+              {msg.role === "assistant" &&
+                msg.found &&
+                !msg.decision &&
+                msg.page != null && (
+                  <div className="mt-1 text-xs font-medium text-slate-500">
+                    Source: {msg.docType ? `${msg.docType} ` : ""}page {msg.page}
+                  </div>
+                )}
             </div>
           </div>
         ))}

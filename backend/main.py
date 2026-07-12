@@ -141,6 +141,7 @@ class SearchResponse(BaseModel):
     page: int
     file: str = ""  # public PDF filename for the top result
     doc_type: str = ""  # AMM | IPC for the top result
+    found: bool = True  # False when the answer isn't in the manual
     snippet: str = ""
     sources: list[int] = []
     citations: list[Citation] = []
@@ -239,7 +240,9 @@ def search(request: SearchRequest) -> SearchResponse:
         ]
 
     if not scored:
-        return SearchResponse(answer="I cannot find this in the manual.", page=1)
+        return SearchResponse(
+            answer="I cannot find this in the manual.", page=1, found=False
+        )
 
     results = [doc for doc, _ in scored]
 
@@ -352,11 +355,21 @@ def search(request: SearchRequest) -> SearchResponse:
         decision.stock_checked_at = now_iso()
         decision.stock_source = stock_provider.source_name
 
+    # If the answer isn't grounded in the manual, don't cite pages or jump the
+    # viewer to an irrelevant source.
+    found = "cannot find" not in answer.lower()
+    if not found:
+        sources = []
+        citations = []
+        top_file = ""
+        top_doc_type = ""
+
     return SearchResponse(
         answer=answer,
         page=top_page,
         file=top_file,
         doc_type=top_doc_type,
+        found=found,
         snippet=top_snippet,
         sources=sources,
         citations=citations,
