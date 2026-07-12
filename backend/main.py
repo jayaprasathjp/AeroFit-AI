@@ -60,8 +60,12 @@ PROMPT_TEMPLATE = (
     "<answer>\nA concise response to the query, written in your own words "
     "(do not copy long passages verbatim). Markdown allowed.\n</answer>\n\n"
     "<decision>\n"
-    "If the query is about a part and its approved alternates, output a JSON object "
-    "using this schema. Otherwise output {{}}.\n"
+    "Output a JSON object using the schema below whenever the context lists a "
+    "primary part together with one or more alternate parts or classifications "
+    "(this includes IPC parts tables with ITEM / PART NUMBER / NOMENCLATURE / "
+    "CLASSIFICATION columns, where the first row is the Primary Part and the "
+    "following rows marked True Alternate / Oversized / Optional Fit are the "
+    "alternates). Only output {{}} if the context has no part/alternate data.\n"
     "{{\n"
     '  "primary_part": "primary part number",\n'
     '  "nomenclature": "part name",\n'
