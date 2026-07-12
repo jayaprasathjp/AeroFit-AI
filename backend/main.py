@@ -81,8 +81,9 @@ PROMPT_TEMPLATE = (
     "  ]\n"
     "}}\n"
     "Only use facts present in the context. Never invent part numbers.\n\n"
+    "{history}"
     "Context:\n{chunks}\n\n"
-    "User query: {query}\n"
+    "Current user query: {query}\n"
 )
 
 # --- App setup -------------------------------------------------------------
@@ -100,9 +101,15 @@ app.add_middleware(
 
 
 # --- Request / response models ---------------------------------------------
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
 class SearchRequest(BaseModel):
     query: str
     doc_type: str | None = None  # "AMM" | "IPC" to scope the search, else all
+    history: list[ChatMessage] = []  # prior turns for follow-up context
 
 
 class AlternatePart(BaseModel):
@@ -249,7 +256,13 @@ def search(request: SearchRequest) -> SearchResponse:
 
     # 1. Retrieve the top-K most relevant chunks, with relevance scores.
     #    Optionally scope the search to a single document type (AMM or IPC).
+    #    For follow-ups ("which one is in stock?"), blend the previous user turn
+    #    into the retrieval query so short questions still match the right part.
     vectorstore = get_vectorstore()
+    prev_user = next(
+        (m.content for m in reversed(request.history) if m.role == "user"), ""
+    )
+    retrieval_query = f"{prev_user} {query}".strip() if prev_user else query
     doc_filter = (
         {"doc_type": request.doc_type}
         if request.doc_type in ("AMM", "IPC")
@@ -257,12 +270,14 @@ def search(request: SearchRequest) -> SearchResponse:
     )
     try:
         scored = vectorstore.similarity_search_with_relevance_scores(
-            query, k=TOP_K, filter=doc_filter
+            retrieval_query, k=TOP_K, filter=doc_filter
         )
     except Exception:  # noqa: BLE001 - fall back if the store lacks score support
         scored = [
             (doc, 0.0)
-            for doc in vectorstore.similarity_search(query, k=TOP_K, filter=doc_filter)
+            for doc in vectorstore.similarity_search(
+                retrieval_query, k=TOP_K, filter=doc_filter
+            )
         ]
 
     if not scored:
@@ -311,8 +326,18 @@ def search(request: SearchRequest) -> SearchResponse:
     decision: Decision | None = None
     answer = "I cannot find this in the manual."
 
-    # 3. Build the grounded prompt.
-    prompt = PROMPT_TEMPLATE.format(chunks=chunks_text, query=query)
+    # 3. Build the grounded prompt, including recent conversation for follow-ups.
+    history_text = ""
+    if request.history:
+        recent = request.history[-6:]  # cap context to the last few turns
+        lines = [
+            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+            for m in recent
+        ]
+        history_text = "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+    prompt = PROMPT_TEMPLATE.format(
+        chunks=chunks_text, query=query, history=history_text
+    )
 
     # 4. Call Gemini. Degrade gracefully if it is not configured so the UI
     #    (and page navigation) still works during local development.

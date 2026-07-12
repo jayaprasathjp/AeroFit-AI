@@ -47,6 +47,11 @@ export default function ChatPanel({ onReferenceFound }) {
     try {
       const payload = { query };
       if (docFilter !== "ALL") payload.doc_type = docFilter;
+      // Send recent turns (excluding errors) so follow-ups keep context.
+      payload.history = messages
+        .filter((m) => !m.isError && m.text)
+        .slice(-6)
+        .map((m) => ({ role: m.role, content: m.text }));
       const { data } = await axios.post(API_URL, payload);
       const assistantMsg = {
         role: "assistant",
