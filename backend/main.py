@@ -14,6 +14,7 @@ Run:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -59,7 +60,9 @@ PROMPT_TEMPLATE = (
     "Return ONLY one valid JSON object (no markdown fences, no extra prose) with the "
     'keys "answer" and "decision".\n\n'
     '"answer": a concise answer to the query. If the answer is not in the context, set '
-    'it exactly to "I cannot find this in the manual."\n\n'
+    'it exactly to "I cannot find this in the manual." You MAY also answer stock / '
+    "availability questions using the AMAP inventory list below — treat it as the "
+    "authoritative source for on-hand quantities.\n\n"
     '"decision": use null UNLESS the context lists a primary part together with one or '
     "more approved alternates or classifications (this includes IPC parts tables with "
     "ITEM / PART NUMBER / NOMENCLATURE / CLASSIFICATION columns, where the first row is "
@@ -82,6 +85,7 @@ PROMPT_TEMPLATE = (
     "}}\n"
     "Only use facts present in the context. Never invent part numbers.\n\n"
     "{history}"
+    "{stock}"
     "Context:\n{chunks}\n\n"
     "Current user query: {query}\n"
 )
@@ -335,15 +339,28 @@ def search(request: SearchRequest) -> SearchResponse:
             for m in recent
         ]
         history_text = "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+
+    # Attach live AMAP stock for any part numbers mentioned in the retrieved
+    # context, so the model can answer stock/availability questions.
+    part_numbers = sorted(set(re.findall(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)+\b", chunks_text)))
+    stock_text = ""
+    if part_numbers:
+        stock_lines = [
+            f"- {pn}: {stock_provider.get_stock(pn)} in stock"
+            for pn in part_numbers
+        ]
+        stock_text = (
+            "Live AMAP inventory (units on hand):\n" + "\n".join(stock_lines) + "\n\n"
+        )
+
     prompt = PROMPT_TEMPLATE.format(
-        chunks=chunks_text, query=query, history=history_text
+        chunks=chunks_text, query=query, history=history_text, stock=stock_text
     )
 
     # 4. Call Gemini. Degrade gracefully if it is not configured so the UI
     #    (and page navigation) still works during local development.
     try:
         import json
-        import re
 
         llm = get_llm()
         answer_text = ""
@@ -420,14 +437,15 @@ def search(request: SearchRequest) -> SearchResponse:
         decision.stock_checked_at = now_iso()
         decision.stock_source = stock_provider.source_name
 
-    # If the answer isn't grounded in the manual, don't cite pages or jump the
-    # viewer to an irrelevant source.
+    # If the answer isn't grounded in the manual, don't cite pages, show a
+    # decision card, or jump the viewer to an irrelevant source.
     found = "cannot find" not in answer.lower()
     if not found:
         sources = []
         citations = []
         top_file = ""
         top_doc_type = ""
+        decision = None
 
     return SearchResponse(
         answer=answer,
