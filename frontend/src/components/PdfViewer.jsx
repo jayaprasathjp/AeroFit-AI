@@ -9,8 +9,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-const FILE_URL = "/mock_747_amm.pdf";
-
 /**
  * Right-side manual viewer.
  *
@@ -19,10 +17,14 @@ const FILE_URL = "/mock_747_amm.pdf";
  *                        chat panel received a new API response), the viewer
  *                        jumps to that page automatically.
  *   highlightText: string — text keywords to highlight on the page.
+ *   pdfFile: string — public PDF filename to display (e.g. "amm.pdf").
  */
-export default function PdfViewer({ pageNumber, highlightText }) {
+export default function PdfViewer({ pageNumber, highlightText, pdfFile }) {
   const [numPages, setNumPages] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
+
+  const fileName = pdfFile || "amm.pdf";
+  const fileUrl = `/${fileName}`;
 
   // Jump to the cited page whenever the prop changes.
   useEffect(() => {
@@ -119,7 +121,7 @@ export default function PdfViewer({ pageNumber, highlightText }) {
   return (
     <div className="flex h-full flex-col bg-slate-800">
       <div className="flex items-center justify-between border-b border-slate-700 px-4 py-2 text-slate-100">
-        <span className="text-sm font-medium">mock_747_amm.pdf</span>
+        <span className="text-sm font-medium">{fileName}</span>
         <div className="flex items-center gap-2 text-sm">
           <button
             onClick={goPrev}
@@ -145,14 +147,14 @@ export default function PdfViewer({ pageNumber, highlightText }) {
       <div className="flex-1 overflow-auto p-4">
         <div className="flex justify-center">
           <Document
-            file={FILE_URL}
+            file={fileUrl}
             onLoadSuccess={onDocumentLoadSuccess}
             loading={
               <p className="mt-8 text-center text-slate-300">Loading manual…</p>
             }
             error={
               <p className="mt-8 text-center text-red-300">
-                Failed to load PDF. Ensure mock_747_amm.pdf is in /public.
+                Failed to load PDF. Ensure {fileName} is in /public.
               </p>
             }
           >

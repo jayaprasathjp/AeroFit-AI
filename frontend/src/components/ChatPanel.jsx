@@ -7,6 +7,19 @@ import DecisionCard from "./DecisionCard.jsx";
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const API_URL = `${API_BASE}/api/search`;
 
+// Build the PDF highlight string for a message: prefer the exact part numbers
+// from the decision (precise), else fall back to the retrieved snippet.
+function highlightFor(msg) {
+  const partNumbers = [];
+  if (msg.decision) {
+    if (msg.decision.primary_part) partNumbers.push(msg.decision.primary_part);
+    (msg.decision.alternates || []).forEach(
+      (a) => a.part_number && partNumbers.push(a.part_number)
+    );
+  }
+  return partNumbers.length ? partNumbers.join(" ") : msg.snippet || "";
+}
+
 /**
  * Left-side chat interface.
  *
@@ -32,30 +45,24 @@ export default function ChatPanel({ onReferenceFound }) {
 
     try {
       const { data } = await axios.post(API_URL, { query });
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          text: data.answer,
-          page: data.page,
-          decision: data.decision || null,
-        },
-      ]);
+      const assistantMsg = {
+        role: "assistant",
+        text: data.answer,
+        page: data.page,
+        file: data.file || "amm.pdf",
+        docType: data.doc_type || "",
+        sources: data.sources || [],
+        citations: data.citations || [],
+        snippet: data.snippet || "",
+        decision: data.decision || null,
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
       if (typeof data.page === "number" && onReferenceFound) {
-        // Prefer highlighting the exact part numbers from the decision (precise);
-        // fall back to the retrieved snippet, then the raw query.
-        const partNumbers = [];
-        if (data.decision) {
-          if (data.decision.primary_part)
-            partNumbers.push(data.decision.primary_part);
-          (data.decision.alternates || []).forEach(
-            (a) => a.part_number && partNumbers.push(a.part_number)
-          );
-        }
-        const highlight = partNumbers.length
-          ? partNumbers.join(" ")
-          : data.snippet || query;
-        onReferenceFound(data.page, highlight);
+        onReferenceFound(
+          data.page,
+          highlightFor(assistantMsg) || query,
+          assistantMsg.file
+        );
       }
     } catch (error) {
       const detail =
@@ -105,7 +112,15 @@ export default function ChatPanel({ onReferenceFound }) {
             >
               {msg.text}
               {msg.role === "assistant" && msg.decision && (
-                <DecisionCard decision={msg.decision} />
+                <DecisionCard
+                  decision={msg.decision}
+                  sources={msg.sources}
+                  citations={msg.citations}
+                  onSourceClick={(page, file) =>
+                    onReferenceFound &&
+                    onReferenceFound(page, highlightFor(msg), file || msg.file)
+                  }
+                />
               )}
               {msg.role === "assistant" && msg.page != null && (
                 <div className="mt-1 text-xs font-medium text-slate-500">

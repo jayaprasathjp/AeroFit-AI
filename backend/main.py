@@ -23,6 +23,8 @@ from pydantic import BaseModel
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
 from langchain_community.vectorstores import Chroma
 
+from stock_service import get_stock_provider, now_iso
+
 load_dotenv()
 
 # --- Configuration ---------------------------------------------------------
@@ -33,6 +35,11 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 TOP_K = 3
 DOCUMENT_ID = "B748-AMM-IPC-001"
 MANUAL_REVISION = "14.2"  # active revision of the ingested manual
+
+# Live inventory (AMAP) lookup behind a swappable interface. The mock provider
+# hot-reloads data/mock_stock.json, so stock is dynamic at runtime and the whole
+# thing can be replaced by a real AMAP API client without touching this route.
+stock_provider = get_stock_provider()
 
 # Gemini API configuration (read from environment / .env).
 # Get a free key at https://aistudio.google.com/apikey
@@ -102,20 +109,36 @@ class AlternatePart(BaseModel):
     restrictions: str = ""
     hardware: str = ""
     el_signoff: bool = False
+    stock: int = 0
 
 
 class Decision(BaseModel):
     primary_part: str = ""
+    primary_stock: int = 0
     nomenclature: str = ""
     revision: str = ""
+    revision_current: bool = True
     document: str = ""
+    stock_checked_at: str = ""
+    stock_source: str = ""
     alternates: list[AlternatePart] = []
+
+
+class Citation(BaseModel):
+    page: int
+    score: float = 0.0  # relevance 0..1 (higher = better match)
+    doc_type: str = ""  # AMM | IPC
+    file: str = ""  # public PDF filename to open
 
 
 class SearchResponse(BaseModel):
     answer: str
     page: int
+    file: str = ""  # public PDF filename for the top result
+    doc_type: str = ""  # AMM | IPC for the top result
     snippet: str = ""
+    sources: list[int] = []
+    citations: list[Citation] = []
     decision: Decision | None = None
 
 
@@ -192,22 +215,51 @@ def search(request: SearchRequest) -> SearchResponse:
     if not query:
         raise HTTPException(status_code=400, detail="Query must not be empty.")
 
-    # 1. Retrieve the top-K most relevant chunks.
+    # 1. Retrieve the top-K most relevant chunks, with relevance scores.
     vectorstore = get_vectorstore()
-    results = vectorstore.similarity_search(query, k=TOP_K)
+    try:
+        scored = vectorstore.similarity_search_with_relevance_scores(query, k=TOP_K)
+    except Exception:  # noqa: BLE001 - fall back if the store lacks score support
+        scored = [(doc, 0.0) for doc in vectorstore.similarity_search(query, k=TOP_K)]
 
-    if not results:
+    if not scored:
         return SearchResponse(answer="I cannot find this in the manual.", page=1)
 
-    # 2. Assemble the context and determine the best page to display.
+    results = [doc for doc, _ in scored]
+
+    # 2. Assemble the context, page sources, and per-page confidence citations.
     #    PyPDFLoader stores 0-indexed pages; react-pdf is 1-indexed, so +1.
+    #    Pages are de-duplicated per (document, page) since AMM p4 != IPC p4.
     context_parts = []
-    for doc in results:
-        page_meta = doc.metadata.get("page", 0)
-        context_parts.append(f"[Page {page_meta + 1}]\n{doc.page_content}")
+    sources: list[int] = []  # unique 1-indexed pages, in relevance order
+    citations: list[Citation] = []
+    seen: set = set()
+    for doc, score in scored:
+        meta = doc.metadata
+        page_1indexed = int(meta.get("page", 0)) + 1
+        doc_type = meta.get("doc_type", "")
+        file = meta.get("file", "")
+        label = f"[{doc_type or 'DOC'} · Page {page_1indexed}]"
+        context_parts.append(f"{label}\n{doc.page_content}")
+        key = (file, page_1indexed)
+        if key not in seen:
+            seen.add(key)
+            if page_1indexed not in sources:
+                sources.append(page_1indexed)
+            citations.append(
+                Citation(
+                    page=page_1indexed,
+                    score=round(max(0.0, min(1.0, score)), 3),
+                    doc_type=doc_type,
+                    file=file,
+                )
+            )
     chunks_text = "\n\n---\n\n".join(context_parts)
 
-    top_page = int(results[0].metadata.get("page", 0)) + 1
+    top_meta = results[0].metadata
+    top_page = int(top_meta.get("page", 0)) + 1
+    top_file = top_meta.get("file", "")
+    top_doc_type = top_meta.get("doc_type", "")
     # The full text of the best-matching chunk. The frontend highlights its
     # distinctive terms (part numbers, nomenclature) on the rendered page.
     top_snippet = results[0].page_content
@@ -261,7 +313,11 @@ def search(request: SearchRequest) -> SearchResponse:
                         )
                         decision.revision = rev.group(1) if rev else MANUAL_REVISION
                     if not decision.document:
-                        decision.document = DOCUMENT_ID
+                        decision.document = top_meta.get("document_id", DOCUMENT_ID)
+                    # Compliance check: is the cited revision the active one?
+                    decision.revision_current = (
+                        decision.revision == MANUAL_REVISION
+                    )
             except (json.JSONDecodeError, ValueError):
                 decision = None
 
@@ -272,6 +328,21 @@ def search(request: SearchRequest) -> SearchResponse:
             f"Reason: {exc}\nRaw LLM Output:\n{raw_output}\n\n{chunks_text}"
         )
 
+    # 5. Inject live AMAP stock levels into the decision (default 0 if unknown).
+    if decision is not None:
+        decision.primary_stock = stock_provider.get_stock(decision.primary_part)
+        for alt in decision.alternates:
+            alt.stock = stock_provider.get_stock(alt.part_number)
+        decision.stock_checked_at = now_iso()
+        decision.stock_source = stock_provider.source_name
+
     return SearchResponse(
-        answer=answer, page=top_page, snippet=top_snippet, decision=decision
+        answer=answer,
+        page=top_page,
+        file=top_file,
+        doc_type=top_doc_type,
+        snippet=top_snippet,
+        sources=sources,
+        citations=citations,
+        decision=decision,
     )

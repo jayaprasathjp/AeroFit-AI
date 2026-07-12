@@ -13,10 +13,12 @@ import PdfViewer from "./components/PdfViewer.jsx";
 export default function App() {
   const [pageNumber, setPageNumber] = useState(1);
   const [highlightText, setHighlightText] = useState("");
+  const [pdfFile, setPdfFile] = useState("amm.pdf");
 
-  const handleReferenceFound = (page, text) => {
+  const handleReferenceFound = (page, text, file) => {
     setPageNumber(page);
     setHighlightText(text);
+    if (file) setPdfFile(file);
   };
 
   return (
@@ -25,7 +27,11 @@ export default function App() {
         <ChatPanel onReferenceFound={handleReferenceFound} />
       </div>
       <div className="w-1/2">
-        <PdfViewer pageNumber={pageNumber} highlightText={highlightText} />
+        <PdfViewer
+          pageNumber={pageNumber}
+          highlightText={highlightText}
+          pdfFile={pdfFile}
+        />
       </div>
     </div>
   );
