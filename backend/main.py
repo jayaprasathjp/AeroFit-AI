@@ -100,6 +100,7 @@ app.add_middleware(
 # --- Request / response models ---------------------------------------------
 class SearchRequest(BaseModel):
     query: str
+    doc_type: str | None = None  # "AMM" | "IPC" to scope the search, else all
 
 
 class AlternatePart(BaseModel):
@@ -216,11 +217,22 @@ def search(request: SearchRequest) -> SearchResponse:
         raise HTTPException(status_code=400, detail="Query must not be empty.")
 
     # 1. Retrieve the top-K most relevant chunks, with relevance scores.
+    #    Optionally scope the search to a single document type (AMM or IPC).
     vectorstore = get_vectorstore()
+    doc_filter = (
+        {"doc_type": request.doc_type}
+        if request.doc_type in ("AMM", "IPC")
+        else None
+    )
     try:
-        scored = vectorstore.similarity_search_with_relevance_scores(query, k=TOP_K)
+        scored = vectorstore.similarity_search_with_relevance_scores(
+            query, k=TOP_K, filter=doc_filter
+        )
     except Exception:  # noqa: BLE001 - fall back if the store lacks score support
-        scored = [(doc, 0.0) for doc in vectorstore.similarity_search(query, k=TOP_K)]
+        scored = [
+            (doc, 0.0)
+            for doc in vectorstore.similarity_search(query, k=TOP_K, filter=doc_filter)
+        ]
 
     if not scored:
         return SearchResponse(answer="I cannot find this in the manual.", page=1)

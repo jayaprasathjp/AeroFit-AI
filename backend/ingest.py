@@ -28,7 +28,7 @@ COLLECTION_NAME = "aerofit_amm"
 # copy served from the frontend's /public folder.
 SOURCES = [
     {
-        "path": "Aircraft Maintenance Manual AMM.pdf",
+        "path": "amm.pdf",
         "doc_type": "AMM",
         "document_id": "B748-AMM-001",
         "file": "amm.pdf",

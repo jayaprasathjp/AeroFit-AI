@@ -32,6 +32,7 @@ export default function ChatPanel({ onReferenceFound }) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [docFilter, setDocFilter] = useState("ALL"); // ALL | AMM | IPC
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -44,7 +45,9 @@ export default function ChatPanel({ onReferenceFound }) {
     setLoading(true);
 
     try {
-      const { data } = await axios.post(API_URL, { query });
+      const payload = { query };
+      if (docFilter !== "ALL") payload.doc_type = docFilter;
+      const { data } = await axios.post(API_URL, payload);
       const assistantMsg = {
         role: "assistant",
         text: data.answer,
@@ -79,12 +82,37 @@ export default function ChatPanel({ onReferenceFound }) {
   return (
     <div className="flex h-full flex-col bg-white">
       <header className="border-b border-slate-200 px-4 py-3">
-        <h1 className="text-lg font-semibold text-slate-800">
-          AeroFit Resolver
-        </h1>
-        <p className="text-xs text-slate-500">
-          Boeing 747-8F maintenance manual assistant
-        </p>
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h1 className="text-lg font-semibold text-slate-800">
+              AeroFit Resolver
+            </h1>
+            <p className="text-xs text-slate-500">
+              Boeing 747-8F maintenance manual assistant
+            </p>
+          </div>
+          {/* Scope search to a single document type */}
+          <div className="flex overflow-hidden rounded-md border border-slate-300 text-xs">
+            {[
+              { key: "ALL", label: "All" },
+              { key: "AMM", label: "AMM" },
+              { key: "IPC", label: "IPC" },
+            ].map((opt) => (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => setDocFilter(opt.key)}
+                className={`px-2.5 py-1 font-medium transition ${
+                  docFilter === opt.key
+                    ? "bg-blue-600 text-white"
+                    : "bg-white text-slate-600 hover:bg-slate-100"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </header>
 
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
