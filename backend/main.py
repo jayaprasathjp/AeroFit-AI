@@ -45,7 +45,7 @@ stock_provider = get_stock_provider()
 # Gemini API configuration (read from environment / .env).
 # Get a free key at https://aistudio.google.com/apikey
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 # Comma-separated list of allowed origins, or "*" for any (default).
 # In production set e.g. ALLOWED_ORIGINS=https://your-frontend.a.run.app
@@ -379,7 +379,26 @@ def search(request: SearchRequest) -> SearchResponse:
             elif isinstance(result, dict):
                 answer_text = result.get("answer", "")
                 dec_dict = result.get("decision")
-        except Exception:  # noqa: BLE001 - fall back to plain text + JSON parse
+        except Exception as struct_exc:  # noqa: BLE001
+            # Don't waste a second request on API-level errors (quota, auth,
+            # rate limit) — surface them to the outer handler instead.
+            emsg = str(struct_exc).lower()
+            if any(
+                k in emsg
+                for k in (
+                    "resource_exhausted",
+                    "429",
+                    "quota",
+                    "rate limit",
+                    "permission",
+                    "unauthenticated",
+                    "api key",
+                    "api_key",
+                )
+            ):
+                raise
+            # Otherwise assume structured output is unsupported and fall back to
+            # a plain call + tolerant JSON parse.
             response = llm.invoke(prompt)
             content = getattr(response, "content", str(response))
             content_str = (
