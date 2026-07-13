@@ -14,10 +14,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the embedding model into the image so cold starts on Cloud Run
 # don't hit the network (avoids latency and SSL issues at runtime).
-RUN python -c "from langchain_community.embeddings import HuggingFaceBgeEmbeddings; HuggingFaceBgeEmbeddings(model_name='BAAI/bge-small-en-v1.5', model_kwargs={'device':'cpu'}, encode_kwargs={'normalize_embeddings': True})"
+RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; HuggingFaceEmbeddings(model_name='BAAI/bge-small-en-v1.5', model_kwargs={'device':'cpu'}, encode_kwargs={'normalize_embeddings': True})"
 
-# Copy the app source AND the prebuilt chroma_db vector store.
+# Copy the app source
 COPY . .
+
+# Generate the ChromaDB vector store during the build so it is baked into the image.
+# This is necessary because chroma_db/ is excluded via .gitignore and won't be available in Cloud Build.
+RUN python ingest.py
 
 # Cloud Run injects $PORT (defaults to 8080). Bind to it on 0.0.0.0.
 ENV PORT=8080

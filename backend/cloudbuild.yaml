@@ -1,0 +1,28 @@
+steps:
+  # ============================================================================
+  # BACKEND BUILD & DEPLOY
+  # ============================================================================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-backend'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/aerofit-backend', './backend']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-backend'
+    args: ['push', 'gcr.io/$PROJECT_ID/aerofit-backend']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-backend'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Deploy to Cloud Run
+        gcloud run deploy aerofit-backend \
+          --image gcr.io/$PROJECT_ID/aerofit-backend \
+          --region us-central1 \
+          --platform managed \
+          --allow-unauthenticated \
+          --set-env-vars=LLM_PROVIDER=vertexai,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1,HF_HUB_DISABLE_TELEMETRY=1
+
+images:
+  - 'gcr.io/$PROJECT_ID/aerofit-backend'

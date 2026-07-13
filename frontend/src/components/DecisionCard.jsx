@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 /**
  * DecisionCard — renders the structured "approved alternate parts" decision
  * returned by the backend as a scannable card with classification badges.
@@ -94,6 +96,8 @@ export default function DecisionCard({
   citations = [],
   onSourceClick,
 }) {
+  const [copied, setCopied] = useState(false);
+
   if (!decision || !decision.alternates || decision.alternates.length === 0) {
     return null;
   }
@@ -128,6 +132,59 @@ export default function DecisionCard({
     const d = new Date(stock_checked_at);
     if (!Number.isNaN(d.getTime())) checkedAtLabel = d.toLocaleTimeString();
   }
+
+  // Build a plain-text summary the mechanic can paste into a work order / EL email.
+  const buildSummary = () => {
+    const lines = [];
+    lines.push("APPROVED PARTS DECISION — AeroFit Resolver");
+    lines.push(
+      `Primary: ${primary_part}${nomenclature ? ` (${nomenclature})` : ""} — ${
+        primary_stock > 0 ? `${primary_stock} in stock` : "OUT OF STOCK"
+      } (AMAP)`
+    );
+    if (document || revision) {
+      lines.push(
+        `Source: ${document || "manual"}${revision ? ` · Rev ${revision}` : ""}${
+          revision_current ? " (active)" : " (SUPERSEDED)"
+        }`
+      );
+    }
+    lines.push("");
+    lines.push("Approved alternates:");
+    orderedAlternates.forEach((alt, i) => {
+      const stock =
+        (alt.stock ?? 0) > 0 ? `${alt.stock} in stock` : "0 in stock";
+      lines.push(
+        `${i + 1}. ${alt.part_number} — ${alt.classification} — ${stock}${
+          alt.part_number === recommendedPart ? "  [RECOMMENDED]" : ""
+        }`
+      );
+      if (alt.notes) lines.push(`   Notes: ${alt.notes}`);
+      if (alt.hardware) lines.push(`   Hardware: ${alt.hardware}`);
+      if (alt.restrictions) lines.push(`   Restriction: ${alt.restrictions}`);
+      if (alt.el_signoff) lines.push(`   ** Requires Engineering Liaison sign-off **`);
+    });
+    if (citationList.length > 0) {
+      lines.push("");
+      lines.push(
+        "References: " +
+          citationList
+            .map((c) => `${c.doc_type ? `${c.doc_type} ` : ""}p${c.page}`)
+            .join(", ")
+      );
+    }
+    return lines.join("\n");
+  };
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(buildSummary());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <div className="mt-3 overflow-hidden rounded-lg border border-slate-300 bg-white">
@@ -242,29 +299,38 @@ export default function DecisionCard({
         })}
       </ul>
 
-      {/* Source citations */}
-      {citationList.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-200 bg-slate-50 px-3 py-2">
-          <span className="text-[11px] font-medium text-slate-500">
-            Sources:
-          </span>
-          {citationList.map(({ page, score, doc_type, file }, idx) => (
-            <button
-              key={`${file || "doc"}-${page}-${idx}`}
-              type="button"
-              onClick={() => onSourceClick && onSourceClick(page, file)}
-              className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-700 transition hover:bg-blue-50"
-            >
-              {doc_type ? `${doc_type} ` : ""}Page {page}
-              {score != null && (
-                <span className="ml-1 text-slate-400">
-                  {Math.round(score * 100)}%
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Source citations + copy-for-EL action */}
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-200 bg-slate-50 px-3 py-2">
+        {citationList.length > 0 && (
+          <>
+            <span className="text-[11px] font-medium text-slate-500">
+              Sources:
+            </span>
+            {citationList.map(({ page, score, doc_type, file }, idx) => (
+              <button
+                key={`${file || "doc"}-${page}-${idx}`}
+                type="button"
+                onClick={() => onSourceClick && onSourceClick(page, file)}
+                className="rounded border border-ups-brown-200 bg-white px-2 py-0.5 text-[11px] font-medium text-ups-brown-700 transition hover:border-ups-gold hover:bg-ups-gold-50"
+              >
+                {doc_type ? `${doc_type} ` : ""}Page {page}
+                {score != null && (
+                  <span className="ml-1 text-slate-400">
+                    {Math.round(score * 100)}%
+                  </span>
+                )}
+              </button>
+            ))}
+          </>
+        )}
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="ml-auto rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 transition hover:bg-slate-100"
+        >
+          {copied ? "✓ Copied" : "📋 Copy for EL"}
+        </button>
+      </div>
     </div>
   );
 }

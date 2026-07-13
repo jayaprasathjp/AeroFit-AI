@@ -14,14 +14,16 @@ Run:
 """
 
 import os
+os.environ["HF_TOKEN"] = "none"
+import re
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
 from stock_service import get_stock_provider, now_iso
 
@@ -41,10 +43,28 @@ MANUAL_REVISION = "14.2"  # active revision of the ingested manual
 # thing can be replaced by a real AMAP API client without touching this route.
 stock_provider = get_stock_provider()
 
-# Gemini API configuration (read from environment / .env).
+# LLM provider configuration (read from environment / .env).
+#   "vertexai" -> Google Cloud Vertex AI (auth via ADC / service account,
+#                 no API key; needs GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION)
+#   "google"   -> Google AI Studio (auth via GOOGLE_API_KEY)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "vertexai").strip().lower()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+
+# Vertex AI: project + region come from the environment. Credentials are
+# resolved (in order) from an explicit service-account key file (no gcloud CLI
+# required) or Application Default Credentials (gcloud auth application-default
+# login / metadata server).
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+# Path to a service-account JSON key. Accepts the standard
+# GOOGLE_APPLICATION_CREDENTIALS or a project-specific SERVICE_ACCOUNT_FILE.
+SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE") or os.getenv(
+    "GOOGLE_APPLICATION_CREDENTIALS"
+)
+
+# Google AI Studio (API key) fallback provider.
 # Get a free key at https://aistudio.google.com/apikey
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 
 # Comma-separated list of allowed origins, or "*" for any (default).
 # In production set e.g. ALLOWED_ORIGINS=https://your-frontend.a.run.app
@@ -59,7 +79,9 @@ PROMPT_TEMPLATE = (
     "Return ONLY one valid JSON object (no markdown fences, no extra prose) with the "
     'keys "answer" and "decision".\n\n'
     '"answer": a concise answer to the query. If the answer is not in the context, set '
-    'it exactly to "I cannot find this in the manual."\n\n'
+    'it exactly to "I cannot find this in the manual." You MAY also answer stock / '
+    "availability questions using the AMAP inventory list below — treat it as the "
+    "authoritative source for on-hand quantities.\n\n"
     '"decision": use null UNLESS the context lists a primary part together with one or '
     "more approved alternates or classifications (this includes IPC parts tables with "
     "ITEM / PART NUMBER / NOMENCLATURE / CLASSIFICATION columns, where the first row is "
@@ -81,8 +103,10 @@ PROMPT_TEMPLATE = (
     "  ]\n"
     "}}\n"
     "Only use facts present in the context. Never invent part numbers.\n\n"
+    "{history}"
+    "{stock}"
     "Context:\n{chunks}\n\n"
-    "User query: {query}\n"
+    "Current user query: {query}\n"
 )
 
 # --- App setup -------------------------------------------------------------
@@ -100,9 +124,15 @@ app.add_middleware(
 
 
 # --- Request / response models ---------------------------------------------
+class ChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
 class SearchRequest(BaseModel):
     query: str
     doc_type: str | None = None  # "AMM" | "IPC" to scope the search, else all
+    history: list[ChatMessage] = []  # prior turns for follow-up context
 
 
 class AlternatePart(BaseModel):
@@ -187,7 +217,10 @@ def get_vectorstore() -> Chroma:
                 status_code=500,
                 detail="Vector store not found. Run `python ingest.py` first.",
             )
-        embeddings = HuggingFaceBgeEmbeddings(
+        import logging
+        logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+        embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL_NAME,
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
@@ -201,37 +234,92 @@ def get_vectorstore() -> Chroma:
 
 
 def get_llm():
-    """Lazily initialize the Gemini model via the Google AI (API key) endpoint."""
+    """Lazily initialize the Gemini model for the configured provider.
+
+    Defaults to Vertex AI (Google Cloud auth, no API key). Set LLM_PROVIDER=google
+    to use the Google AI Studio API-key endpoint instead.
+    """
     global _llm
     if _llm is None:
-        if not GOOGLE_API_KEY:
-            raise RuntimeError(
-                "GOOGLE_API_KEY is not set. Get a free key at "
-                "https://aistudio.google.com/apikey and add it to backend/.env"
+        if LLM_PROVIDER == "vertexai":
+            if not GOOGLE_CLOUD_PROJECT:
+                raise RuntimeError(
+                    "GOOGLE_CLOUD_PROJECT is not set. Set it (and optionally "
+                    "GOOGLE_CLOUD_LOCATION) in backend/.env and authenticate with "
+                    "`gcloud auth application-default login` or a service account "
+                    "key via GOOGLE_APPLICATION_CREDENTIALS."
+                )
+            from langchain_google_genai import (
+                ChatGoogleGenerativeAI,
+                HarmBlockThreshold,
+                HarmCategory,
             )
-        from langchain_google_genai import (
-            ChatGoogleGenerativeAI,
-            HarmBlockThreshold,
-            HarmCategory,
-        )
 
-        # Disable safety blocking so aviation/maintenance wording (e.g. "failure",
-        # "danger", fuel/explosive terms) doesn't cause premature truncation.
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
+            # Prefer an explicit service-account key file so the app works
+            # without the gcloud CLI / ADC. Falls back to ADC when unset.
+            credentials = None
+            if SERVICE_ACCOUNT_FILE:
+                if not os.path.isfile(SERVICE_ACCOUNT_FILE):
+                    raise RuntimeError(
+                        "Service-account key file not found: "
+                        f"{SERVICE_ACCOUNT_FILE}. Set SERVICE_ACCOUNT_FILE (or "
+                        "GOOGLE_APPLICATION_CREDENTIALS) to a valid JSON key path."
+                    )
+                from google.oauth2 import service_account
 
-        base_kwargs = dict(
-            model=GEMINI_MODEL,
-            google_api_key=GOOGLE_API_KEY,
-            temperature=0.2,
-            max_output_tokens=2048,
-            safety_settings=safety_settings,
-        )
-        _llm = ChatGoogleGenerativeAI(**base_kwargs)
+                credentials = service_account.Credentials.from_service_account_file(
+                    SERVICE_ACCOUNT_FILE,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+
+            # Disable safety blocking so aviation/maintenance wording (e.g.
+            # "failure", "danger", fuel/explosive terms) doesn't cause premature
+            # truncation.
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            _llm = ChatGoogleGenerativeAI(
+                model=GEMINI_MODEL,
+                project=GOOGLE_CLOUD_PROJECT,
+                location=GOOGLE_CLOUD_LOCATION,
+                credentials=credentials,
+                temperature=0.2,
+                max_output_tokens=2048,
+                safety_settings=safety_settings,
+            )
+        else:
+            if not GOOGLE_API_KEY:
+                raise RuntimeError(
+                    "GOOGLE_API_KEY is not set. Get a free key at "
+                    "https://aistudio.google.com/apikey and add it to backend/.env"
+                )
+            from langchain_google_genai import (
+                ChatGoogleGenerativeAI,
+                HarmBlockThreshold,
+                HarmCategory,
+            )
+
+            # Disable safety blocking so aviation/maintenance wording (e.g.
+            # "failure", "danger", fuel/explosive terms) doesn't cause premature
+            # truncation.
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            _llm = ChatGoogleGenerativeAI(
+                model=GEMINI_MODEL,
+                google_api_key=GOOGLE_API_KEY,
+                temperature=0.2,
+                max_output_tokens=2048,
+                safety_settings=safety_settings,
+            )
     return _llm
 
 
@@ -249,7 +337,13 @@ def search(request: SearchRequest) -> SearchResponse:
 
     # 1. Retrieve the top-K most relevant chunks, with relevance scores.
     #    Optionally scope the search to a single document type (AMM or IPC).
+    #    For follow-ups ("which one is in stock?"), blend the previous user turn
+    #    into the retrieval query so short questions still match the right part.
     vectorstore = get_vectorstore()
+    prev_user = next(
+        (m.content for m in reversed(request.history) if m.role == "user"), ""
+    )
+    retrieval_query = f"{prev_user} {query}".strip() if prev_user else query
     doc_filter = (
         {"doc_type": request.doc_type}
         if request.doc_type in ("AMM", "IPC")
@@ -257,12 +351,14 @@ def search(request: SearchRequest) -> SearchResponse:
     )
     try:
         scored = vectorstore.similarity_search_with_relevance_scores(
-            query, k=TOP_K, filter=doc_filter
+            retrieval_query, k=TOP_K, filter=doc_filter
         )
     except Exception:  # noqa: BLE001 - fall back if the store lacks score support
         scored = [
             (doc, 0.0)
-            for doc in vectorstore.similarity_search(query, k=TOP_K, filter=doc_filter)
+            for doc in vectorstore.similarity_search(
+                retrieval_query, k=TOP_K, filter=doc_filter
+            )
         ]
 
     if not scored:
@@ -311,14 +407,37 @@ def search(request: SearchRequest) -> SearchResponse:
     decision: Decision | None = None
     answer = "I cannot find this in the manual."
 
-    # 3. Build the grounded prompt.
-    prompt = PROMPT_TEMPLATE.format(chunks=chunks_text, query=query)
+    # 3. Build the grounded prompt, including recent conversation for follow-ups.
+    history_text = ""
+    if request.history:
+        recent = request.history[-6:]  # cap context to the last few turns
+        lines = [
+            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content}"
+            for m in recent
+        ]
+        history_text = "Conversation so far:\n" + "\n".join(lines) + "\n\n"
+
+    # Attach live AMAP stock for any part numbers mentioned in the retrieved
+    # context, so the model can answer stock/availability questions.
+    part_numbers = sorted(set(re.findall(r"\b[A-Z]{2,}(?:-[A-Z0-9]+)+\b", chunks_text)))
+    stock_text = ""
+    if part_numbers:
+        stock_lines = [
+            f"- {pn}: {stock_provider.get_stock(pn)} in stock"
+            for pn in part_numbers
+        ]
+        stock_text = (
+            "Live AMAP inventory (units on hand):\n" + "\n".join(stock_lines) + "\n\n"
+        )
+
+    prompt = PROMPT_TEMPLATE.format(
+        chunks=chunks_text, query=query, history=history_text, stock=stock_text
+    )
 
     # 4. Call Gemini. Degrade gracefully if it is not configured so the UI
     #    (and page navigation) still works during local development.
     try:
         import json
-        import re
 
         llm = get_llm()
         answer_text = ""
@@ -337,7 +456,26 @@ def search(request: SearchRequest) -> SearchResponse:
             elif isinstance(result, dict):
                 answer_text = result.get("answer", "")
                 dec_dict = result.get("decision")
-        except Exception:  # noqa: BLE001 - fall back to plain text + JSON parse
+        except Exception as struct_exc:  # noqa: BLE001
+            # Don't waste a second request on API-level errors (quota, auth,
+            # rate limit) — surface them to the outer handler instead.
+            emsg = str(struct_exc).lower()
+            if any(
+                k in emsg
+                for k in (
+                    "resource_exhausted",
+                    "429",
+                    "quota",
+                    "rate limit",
+                    "permission",
+                    "unauthenticated",
+                    "api key",
+                    "api_key",
+                )
+            ):
+                raise
+            # Otherwise assume structured output is unsupported and fall back to
+            # a plain call + tolerant JSON parse.
             response = llm.invoke(prompt)
             content = getattr(response, "content", str(response))
             content_str = (
@@ -395,14 +533,15 @@ def search(request: SearchRequest) -> SearchResponse:
         decision.stock_checked_at = now_iso()
         decision.stock_source = stock_provider.source_name
 
-    # If the answer isn't grounded in the manual, don't cite pages or jump the
-    # viewer to an irrelevant source.
+    # If the answer isn't grounded in the manual, don't cite pages, show a
+    # decision card, or jump the viewer to an irrelevant source.
     found = "cannot find" not in answer.lower()
     if not found:
         sources = []
         citations = []
         top_file = ""
         top_doc_type = ""
+        decision = None
 
     return SearchResponse(
         answer=answer,

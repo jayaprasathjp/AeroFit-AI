@@ -11,11 +11,20 @@ Run once before starting the API:
 """
 
 import os
+import warnings
+import logging
+from dotenv import load_dotenv
+
+# Load .env
+load_dotenv()
+
+# Suppress the langchain-community DeprecationWarning for PyPDFLoader
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
 # --- Configuration ---------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -49,9 +58,15 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 
 
-def get_embeddings() -> HuggingFaceBgeEmbeddings:
+def get_embeddings() -> HuggingFaceEmbeddings:
     """Create the local embedding model used for both ingest and query."""
-    return HuggingFaceBgeEmbeddings(
+    # Suppress Hugging Face unauthenticated warnings right before init
+    # because the sentence_transformers import sets the logger to WARNING
+    import logging
+    logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+    
+    return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL_NAME,
         model_kwargs={"device": "cpu"},
         encode_kwargs={"normalize_embeddings": True},
@@ -101,8 +116,7 @@ def ingest() -> None:
         collection_name=COLLECTION_NAME,
         persist_directory=CHROMA_DIR,
     )
-    vectorstore.persist()
-    print("Ingestion complete. Vector store persisted.")
+    print("Ingestion complete. Vector store automatically persisted.")
 
 
 if __name__ == "__main__":

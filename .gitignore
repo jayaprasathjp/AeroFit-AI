@@ -4,6 +4,13 @@ __pycache__/
 .env
 backend/chroma_db/
 
+# Secrets — service-account keys (never commit)
+*-sa.json
+qwiklabs-gcp-03-35cc2732883f-72c601678aef.json
+sa-key*.json
+keys/
+secrets/
+
 # Node / frontend
 node_modules/
 dist/
