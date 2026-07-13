@@ -6,7 +6,7 @@ backend/chroma_db/
 
 # Secrets — service-account keys (never commit)
 *-sa.json
-*service-account*.json
+qwiklabs-gcp-03-35cc2732883f-72c601678aef.json
 sa-key*.json
 keys/
 secrets/

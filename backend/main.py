@@ -14,6 +14,7 @@ Run:
 """
 
 import os
+os.environ["HF_TOKEN"] = "none"
 import re
 
 from dotenv import load_dotenv
@@ -21,8 +22,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
 
 from stock_service import get_stock_provider, now_iso
 
@@ -47,7 +48,7 @@ stock_provider = get_stock_provider()
 #                 no API key; needs GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION)
 #   "google"   -> Google AI Studio (auth via GOOGLE_API_KEY)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "vertexai").strip().lower()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
 # Vertex AI: project + region come from the environment. Credentials are
 # resolved (in order) from an explicit service-account key file (no gcloud CLI
@@ -216,7 +217,7 @@ def get_vectorstore() -> Chroma:
                 status_code=500,
                 detail="Vector store not found. Run `python ingest.py` first.",
             )
-        embeddings = HuggingFaceBgeEmbeddings(
+        embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL_NAME,
             model_kwargs={"device": "cpu"},
             encode_kwargs={"normalize_embeddings": True},
@@ -245,8 +246,8 @@ def get_llm():
                     "`gcloud auth application-default login` or a service account "
                     "key via GOOGLE_APPLICATION_CREDENTIALS."
                 )
-            from langchain_google_vertexai import (
-                ChatVertexAI,
+            from langchain_google_genai import (
+                ChatGoogleGenerativeAI,
                 HarmBlockThreshold,
                 HarmCategory,
             )
@@ -278,7 +279,7 @@ def get_llm():
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
             }
 
-            _llm = ChatVertexAI(
+            _llm = ChatGoogleGenerativeAI(
                 model=GEMINI_MODEL,
                 project=GOOGLE_CLOUD_PROJECT,
                 location=GOOGLE_CLOUD_LOCATION,
