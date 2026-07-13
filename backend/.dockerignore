@@ -5,3 +5,9 @@ __pycache__/
 .env
 data/*.pdf
 *.md
+
+# Secrets — never bake service-account keys into the image
+*.json
+!data/mock_stock.json
+keys/
+secrets/

@@ -42,10 +42,28 @@ MANUAL_REVISION = "14.2"  # active revision of the ingested manual
 # thing can be replaced by a real AMAP API client without touching this route.
 stock_provider = get_stock_provider()
 
-# Gemini API configuration (read from environment / .env).
+# LLM provider configuration (read from environment / .env).
+#   "vertexai" -> Google Cloud Vertex AI (auth via ADC / service account,
+#                 no API key; needs GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION)
+#   "google"   -> Google AI Studio (auth via GOOGLE_API_KEY)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "vertexai").strip().lower()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+# Vertex AI: project + region come from the environment. Credentials are
+# resolved (in order) from an explicit service-account key file (no gcloud CLI
+# required) or Application Default Credentials (gcloud auth application-default
+# login / metadata server).
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+GOOGLE_CLOUD_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+# Path to a service-account JSON key. Accepts the standard
+# GOOGLE_APPLICATION_CREDENTIALS or a project-specific SERVICE_ACCOUNT_FILE.
+SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE") or os.getenv(
+    "GOOGLE_APPLICATION_CREDENTIALS"
+)
+
+# Google AI Studio (API key) fallback provider.
 # Get a free key at https://aistudio.google.com/apikey
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 # Comma-separated list of allowed origins, or "*" for any (default).
 # In production set e.g. ALLOWED_ORIGINS=https://your-frontend.a.run.app
@@ -212,37 +230,92 @@ def get_vectorstore() -> Chroma:
 
 
 def get_llm():
-    """Lazily initialize the Gemini model via the Google AI (API key) endpoint."""
+    """Lazily initialize the Gemini model for the configured provider.
+
+    Defaults to Vertex AI (Google Cloud auth, no API key). Set LLM_PROVIDER=google
+    to use the Google AI Studio API-key endpoint instead.
+    """
     global _llm
     if _llm is None:
-        if not GOOGLE_API_KEY:
-            raise RuntimeError(
-                "GOOGLE_API_KEY is not set. Get a free key at "
-                "https://aistudio.google.com/apikey and add it to backend/.env"
+        if LLM_PROVIDER == "vertexai":
+            if not GOOGLE_CLOUD_PROJECT:
+                raise RuntimeError(
+                    "GOOGLE_CLOUD_PROJECT is not set. Set it (and optionally "
+                    "GOOGLE_CLOUD_LOCATION) in backend/.env and authenticate with "
+                    "`gcloud auth application-default login` or a service account "
+                    "key via GOOGLE_APPLICATION_CREDENTIALS."
+                )
+            from langchain_google_vertexai import (
+                ChatVertexAI,
+                HarmBlockThreshold,
+                HarmCategory,
             )
-        from langchain_google_genai import (
-            ChatGoogleGenerativeAI,
-            HarmBlockThreshold,
-            HarmCategory,
-        )
 
-        # Disable safety blocking so aviation/maintenance wording (e.g. "failure",
-        # "danger", fuel/explosive terms) doesn't cause premature truncation.
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
+            # Prefer an explicit service-account key file so the app works
+            # without the gcloud CLI / ADC. Falls back to ADC when unset.
+            credentials = None
+            if SERVICE_ACCOUNT_FILE:
+                if not os.path.isfile(SERVICE_ACCOUNT_FILE):
+                    raise RuntimeError(
+                        "Service-account key file not found: "
+                        f"{SERVICE_ACCOUNT_FILE}. Set SERVICE_ACCOUNT_FILE (or "
+                        "GOOGLE_APPLICATION_CREDENTIALS) to a valid JSON key path."
+                    )
+                from google.oauth2 import service_account
 
-        base_kwargs = dict(
-            model=GEMINI_MODEL,
-            google_api_key=GOOGLE_API_KEY,
-            temperature=0.2,
-            max_output_tokens=2048,
-            safety_settings=safety_settings,
-        )
-        _llm = ChatGoogleGenerativeAI(**base_kwargs)
+                credentials = service_account.Credentials.from_service_account_file(
+                    SERVICE_ACCOUNT_FILE,
+                    scopes=["https://www.googleapis.com/auth/cloud-platform"],
+                )
+
+            # Disable safety blocking so aviation/maintenance wording (e.g.
+            # "failure", "danger", fuel/explosive terms) doesn't cause premature
+            # truncation.
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            _llm = ChatVertexAI(
+                model=GEMINI_MODEL,
+                project=GOOGLE_CLOUD_PROJECT,
+                location=GOOGLE_CLOUD_LOCATION,
+                credentials=credentials,
+                temperature=0.2,
+                max_output_tokens=2048,
+                safety_settings=safety_settings,
+            )
+        else:
+            if not GOOGLE_API_KEY:
+                raise RuntimeError(
+                    "GOOGLE_API_KEY is not set. Get a free key at "
+                    "https://aistudio.google.com/apikey and add it to backend/.env"
+                )
+            from langchain_google_genai import (
+                ChatGoogleGenerativeAI,
+                HarmBlockThreshold,
+                HarmCategory,
+            )
+
+            # Disable safety blocking so aviation/maintenance wording (e.g.
+            # "failure", "danger", fuel/explosive terms) doesn't cause premature
+            # truncation.
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            _llm = ChatGoogleGenerativeAI(
+                model=GEMINI_MODEL,
+                google_api_key=GOOGLE_API_KEY,
+                temperature=0.2,
+                max_output_tokens=2048,
+                safety_settings=safety_settings,
+            )
     return _llm
 
 
