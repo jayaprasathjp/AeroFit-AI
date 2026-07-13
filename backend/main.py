@@ -217,6 +217,9 @@ def get_vectorstore() -> Chroma:
                 status_code=500,
                 detail="Vector store not found. Run `python ingest.py` first.",
             )
+        import logging
+        logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
         embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL_NAME,
             model_kwargs={"device": "cpu"},

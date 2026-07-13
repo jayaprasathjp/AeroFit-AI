@@ -12,10 +12,12 @@ Run once before starting the API:
 
 import os
 import warnings
+import logging
 from dotenv import load_dotenv
 
-# Load .env (which includes HF_HUB_DISABLE_TELEMETRY) to suppress HF warnings
+# Load .env
 load_dotenv()
+
 # Suppress the langchain-community DeprecationWarning for PyPDFLoader
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -58,6 +60,12 @@ CHUNK_OVERLAP = 50
 
 def get_embeddings() -> HuggingFaceEmbeddings:
     """Create the local embedding model used for both ingest and query."""
+    # Suppress Hugging Face unauthenticated warnings right before init
+    # because the sentence_transformers import sets the logger to WARNING
+    import logging
+    logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+    
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL_NAME,
         model_kwargs={"device": "cpu"},
