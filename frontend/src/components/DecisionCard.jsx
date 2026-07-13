@@ -311,7 +311,7 @@ export default function DecisionCard({
                 key={`${file || "doc"}-${page}-${idx}`}
                 type="button"
                 onClick={() => onSourceClick && onSourceClick(page, file)}
-                className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-700 transition hover:bg-blue-50"
+                className="rounded border border-ups-brown-200 bg-white px-2 py-0.5 text-[11px] font-medium text-ups-brown-700 transition hover:border-ups-gold hover:bg-ups-gold-50"
               >
                 {doc_type ? `${doc_type} ` : ""}Page {page}
                 {score != null && (

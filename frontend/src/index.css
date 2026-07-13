@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -7,4 +9,57 @@ body,
 #root {
   height: 100%;
   margin: 0;
+}
+
+body {
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── Thin, themed scrollbars ─────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(53, 28, 21, 0.25) transparent;
+}
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(53, 28, 21, 0.22);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(53, 28, 21, 0.4);
+}
+
+/* ── PDF page presentation ───────────────────────────────────────────── */
+.react-pdf__Page {
+  background: #ffffff !important;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.28);
+  transition: box-shadow 0.2s ease;
+}
+.react-pdf__Page__textContent mark {
+  border-radius: 2px;
+  padding: 0 1px;
+  box-shadow: 0 0 0 1px rgba(255, 181, 0, 0.4);
+}
+
+/* Highlight-pulse for the yellow marks so the citation is easy to spot. */
+@keyframes mark-pulse {
+  0%,
+  100% {
+    background-color: rgba(255, 181, 0, 0.45);
+  }
+  50% {
+    background-color: rgba(255, 181, 0, 0.72);
+  }
 }
