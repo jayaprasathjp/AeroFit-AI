@@ -1,0 +1,51 @@
+steps:
+  # ============================================================================
+  # FRONTEND BUILD & DEPLOY
+  # ============================================================================
+  
+  # Step 1: Fetch the backend URL dynamically from Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'get-backend-url'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run services describe aerofit-backend \
+          --region us-central1 \
+          --format="value(status.url)" > /workspace/backend_url.txt || echo "http://localhost:8000" > /workspace/backend_url.txt
+        echo "Found backend URL: $(cat /workspace/backend_url.txt)"
+
+  # Step 2: Build the frontend with the injected API URL
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        export BACKEND_URL=$(cat /workspace/backend_url.txt)
+        echo "Building frontend with VITE_API_URL=$BACKEND_URL"
+        docker build --build-arg VITE_API_URL=$BACKEND_URL -t gcr.io/$PROJECT_ID/aerofit-frontend ./frontend
+
+  # Step 3: Push the image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-frontend'
+    args: ['push', 'gcr.io/$PROJECT_ID/aerofit-frontend']
+
+  # Step 4: Deploy the frontend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-frontend'
+    args:
+      - 'gcloud'
+      - 'run'
+      - 'deploy'
+      - 'aerofit-frontend'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/aerofit-frontend'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+
+images:
+  - 'gcr.io/$PROJECT_ID/aerofit-frontend'
